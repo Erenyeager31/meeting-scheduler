@@ -36,7 +36,7 @@ export default function RescheduleModal({
       alert("End time must be after start time.");
       return;
     }
-    onConfirm(); // calls the parent reschedule handler
+    onConfirm();
   };
 
   const handleCancelMeeting = async () => {

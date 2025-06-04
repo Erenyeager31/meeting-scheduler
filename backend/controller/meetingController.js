@@ -1,72 +1,52 @@
 import Meeting from "../models/meeting.js";
-import {
-  parseDate,
-  parseDateTime,
-  formatTime,
-  parseLocalDateTime,
-} from "../utils/parsers.js";
+import moment from "moment-timezone";
 
 export const getBookedSlots = async (req, res) => {
   try {
-    const User = req.user;
-
     const { date } = req.query;
+
     if (!date) {
-      return res
-        .status(400)
-        .json({ message: "Please provide a valid date in YYYY-MM-DD format" });
+      return res.status(400).json({
+        message: "Please provide a valid date in YYYY-MM-DD format",
+      });
     }
 
-    const meetingDate = parseDate(date);
+    // Parse the start and end of the given date in IST
+    const businessStartIST = moment.tz(
+      `${date} 09:00`,
+      "YYYY-MM-DD HH:mm",
+      "Asia/Kolkata"
+    );
+    const businessEndIST = moment.tz(
+      `${date} 18:00`,
+      "YYYY-MM-DD HH:mm",
+      "Asia/Kolkata"
+    );
 
-    // Define business hours in local time
-    const startLimit = parseDateTime(date, "09:00");
-    const endLimit = parseDateTime(date, "18:00");
+    // Convert business hours boundaries to UTC for querying DB
+    const businessStartUTC = businessStartIST.clone().utc().toDate();
+    const businessEndUTC = businessEndIST.clone().utc().toDate();
 
-    // Find all scheduled meetings for the given date
     const meetings = await Meeting.find({
-      date: meetingDate,
       status: "scheduled",
+      startTime: { $gte: businessStartUTC, $lt: businessEndUTC },
+      endTime: { $gt: businessStartUTC, $lte: businessEndUTC },
     }).sort({ startTime: 1 });
 
-    const bookedSlots = meetings
-      .filter((meeting) => {
-        const start = new Date(meeting.startTime);
-        const end = new Date(meeting.endTime);
-        // Only include meetings entirely within 09:00–18:00
-        return start >= startLimit && end <= endLimit;
-      })
-      .map((meeting) => {
-        const startDate = new Date(meeting.startTime);
-        const endDate = new Date(meeting.endTime);
+    const bookedSlots = meetings.map((meeting) => {
+      const startIST = moment.utc(meeting.startTime).tz("Asia/Kolkata");
+      const endIST = moment.utc(meeting.endTime).tz("Asia/Kolkata");
 
-        const startStr = `${startDate
-          .getHours()
-          .toString()
-          .padStart(2, "0")}:${startDate
-          .getMinutes()
-          .toString()
-          .padStart(2, "0")}`;
-        const endStr = `${endDate
-          .getHours()
-          .toString()
-          .padStart(2, "0")}:${endDate
-          .getMinutes()
-          .toString()
-          .padStart(2, "0")}`;
-
-        return {
-          startTime: startStr,
-          endTime: endStr,
-          meetingId: meeting._id,
-          employeeId:meeting.employee,
-          employee:meeting.employeeName,
-          title: meeting.title || "Meeting",
-          duration: Math.round(
-            (meeting.endTime - meeting.startTime) / (1000 * 60)
-          ), // in minutes
-        };
-      });
+      return {
+        startTime: startIST.format("HH:mm"),
+        endTime: endIST.format("HH:mm"),
+        meetingId: meeting._id,
+        employeeId: meeting.employee,
+        employee: meeting.employeeName,
+        title: meeting.title || "Meeting",
+        duration: Math.round(endIST.diff(startIST, "minutes")),
+      };
+    });
 
     const simpleSlots = bookedSlots.map((slot) => [
       slot.startTime,
@@ -75,8 +55,8 @@ export const getBookedSlots = async (req, res) => {
 
     res.status(200).json({
       date,
-      bookedSlots, // detailed info
-      bookedSlotsSimple: simpleSlots, // simple slot array format
+      bookedSlots,
+      bookedSlotsSimple: simpleSlots,
       totalBookedSlots: bookedSlots.length,
     });
   } catch (error) {
@@ -96,19 +76,28 @@ export const getAvailableSlots = async (req, res) => {
         .json({ message: "Please provide a valid date in YYYY-MM-DD format" });
     }
 
-    // const now = new Date();
-    // const nowUTC = new Date(); // current UTC time
-    // const now = new Date(nowUTC.getTime() + 5.5 * 60 * 60 * 1000); // add 5.5 hours
-    const now = new Date(); // local time directly
-    const meetingDate = parseDate(date);
+    // Current time in IST
+    const nowIST = moment.tz("Asia/Kolkata");
 
-    // console.log(nowUTC,now);
+    const businessStartIST = moment.tz(
+      `${date} 09:00`,
+      "YYYY-MM-DD HH:mm",
+      "Asia/Kolkata"
+    );
+    const businessEndIST = moment.tz(
+      `${date} 18:00`,
+      "YYYY-MM-DD HH:mm",
+      "Asia/Kolkata"
+    );
 
-    // Check if the requested date is in the past (before today)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // Set to start of today
+    const businessStartUTC = businessStartIST.clone().utc().toDate();
+    const businessEndUTC = businessEndIST.clone().utc().toDate();
 
-    if (meetingDate < today) {
+    console.log(businessStartUTC,businessEndUTC);
+
+    // Check if requested date is in the past relative to IST today
+    const todayIST = nowIST.clone().startOf("day");
+    if (businessStartIST.isBefore(todayIST)) {
       return res.status(400).json({
         message: "Cannot retrieve slots for past dates",
         date,
@@ -117,6 +106,7 @@ export const getAvailableSlots = async (req, res) => {
       });
     }
 
+    // Define raw slots in IST (30-minute slots)
     const rawSlots = [
       ["09:00", "09:30"],
       ["09:30", "10:00"],
@@ -138,46 +128,51 @@ export const getAvailableSlots = async (req, res) => {
       ["17:30", "18:00"],
     ];
 
+    // Map slots to moment objects in IST
     const allSlots = rawSlots.map(([startStr, endStr]) => {
-      const startDateTime = parseDateTime(date, startStr);
-      const endDateTime = parseDateTime(date, endStr);
-      return { start: startDateTime, end: endDateTime, startStr, endStr };
+      const startIST = moment.tz(
+        `${date} ${startStr}`,
+        "YYYY-MM-DD HH:mm",
+        "Asia/Kolkata"
+      );
+      const endIST = moment.tz(
+        `${date} ${endStr}`,
+        "YYYY-MM-DD HH:mm",
+        "Asia/Kolkata"
+      );
+      return { startIST, endIST, startStr, endStr };
     });
 
+    // Fetch meetings overlapping the day in UTC
     const meetings = await Meeting.find({
-      date: meetingDate,
       status: "scheduled",
+      startTime: { $lt: businessEndUTC },
+      endTime: { $gt: businessStartUTC },
     });
 
-    // Add logging to debug:
-    console.log(
-      "Found meetings:",
-      meetings.map((m) => ({
-        start: m.startTime,
-        end: m.endTime,
-        startType: typeof m.startTime,
-        endType: typeof m.endTime,
-      }))
-    );
+    // Filter available slots
+    const availableSlots = [];
 
-    const availableSlots = allSlots.filter((slot) => {
-      // Instead of slot.start <= now, check if slot.end is already past
-      if (slot.start <= now) {
-        return false;
-      }
+    for (const { startIST, endIST, startStr, endStr } of allSlots) {
+      // Skip past slots
+      if (endIST.isSameOrBefore(nowIST) || startIST.isBefore(nowIST)) continue;
 
-      // Check if slot conflicts with any meeting
-      const hasConflict = meetings.some((meeting) => {
-        return slot.start < meeting.endTime && slot.end > meeting.startTime;
+      const startUTC = startIST.clone().utc().toDate();
+      const endUTC = endIST.clone().utc().toDate();
+
+      // Check for conflicts via DB
+      const conflict = await Meeting.exists({
+        status: "scheduled",
+        startTime: { $lt: endUTC },
+        endTime: { $gt: startUTC },
       });
 
-      return !hasConflict;
-    });
+      if (!conflict) {
+        availableSlots.push([startStr, endStr]);
+      }
+    }
 
-    const formattedSlots = availableSlots.map((slot) => [
-      slot.startStr,
-      slot.endStr,
-    ]);
+    const formattedSlots = availableSlots;
 
     res.status(200).json({
       date,
@@ -197,7 +192,6 @@ export const bookMeeting = async (req, res) => {
     const { employeeId, employeeName, date, startTime, endTime, title } =
       req.body;
 
-    // Validate required fields
     if (!employeeId || !employeeName || !date || !startTime || !endTime) {
       return res.status(400).json({
         message:
@@ -205,22 +199,20 @@ export const bookMeeting = async (req, res) => {
       });
     }
 
-    // // Optionally validate employeeId exists in DB
-    // const employeeExists = await User.findById(employeeId);
-    // if (!employeeExists) {
-    //   return res.status(400).json({ message: "Invalid employeeId" });
-    // }
+    // Parse date and times in IST timezone
+    const startIST = moment.tz(
+      `${date} ${startTime}`,
+      "YYYY-MM-DD HH:mm",
+      "Asia/Kolkata"
+    );
+    const endIST = moment.tz(
+      `${date} ${endTime}`,
+      "YYYY-MM-DD HH:mm",
+      "Asia/Kolkata"
+    );
 
-    const startTimeSplit = startTime.split(":");
-    const endTimeSplit = endTime.split(":");
-
-    const start = new Date(date);
-    start.setHours(Number(startTimeSplit[0]), Number(startTimeSplit[1]), 0, 0);
-
-    const end = new Date(date);
-    end.setHours(Number(endTimeSplit[0]), Number(endTimeSplit[1]), 0, 0);
-
-    const durationMinutes = (end - start) / (1000 * 60);
+    // Duration in minutes
+    const durationMinutes = endIST.diff(startIST, "minutes");
 
     if (durationMinutes > 30) {
       return res.status(400).json({
@@ -228,31 +220,36 @@ export const bookMeeting = async (req, res) => {
       });
     }
 
-    if (Number(startTimeSplit[0]) === 18 || Number(startTimeSplit[0]) < 9) {
+    // Check if start time is between 9:00 and 18:00 IST
+    const startHour = startIST.hour();
+    if (startHour < 9 || startHour >= 18) {
       return res.status(400).json({
-        message: "Time slots are available only between 9-18",
+        message: "Time slots are available only between 9-18 IST",
       });
     }
 
-    // Parse date and time correctly
-    const meetingDate = parseDate(date);
-    const startDateTime = parseDateTime(date, startTime);
-    const endDateTime = parseDateTime(date, endTime);
-
-    // Basic validation
-    if (startDateTime >= endDateTime) {
+    if (!startIST.isBefore(endIST)) {
       return res.status(400).json({
         message: "startTime must be before endTime",
       });
     }
 
-    // Check for conflicts
+        // Check if start time is in the past (relative to now in IST)
+    const nowIST = moment.tz("Asia/Kolkata");
+    if (startIST.isBefore(nowIST)) {
+      return res.status(400).json({
+        message: "Cannot book a meeting in the past",
+      });
+    }
+
+    // Convert times to UTC for storing in DB
+    const startUTC = startIST.clone().utc().toDate();
+    const endUTC = endIST.clone().utc().toDate();
+
+    // Check for conflicts without a separate date field
     const conflict = await Meeting.findOne({
-      date: meetingDate,
       status: "scheduled",
-      $or: [
-        { startTime: { $lt: endDateTime }, endTime: { $gt: startDateTime } },
-      ],
+      $or: [{ startTime: { $lt: endUTC }, endTime: { $gt: startUTC } }],
     });
 
     if (conflict) {
@@ -261,13 +258,12 @@ export const bookMeeting = async (req, res) => {
       });
     }
 
-    // Create and save new meeting
+    // Create and save new meeting without separate date field
     const newMeeting = new Meeting({
-      employee: employeeId, // store ObjectId
-      employeeName, // keep the name field too
-      date: meetingDate,
-      startTime: startDateTime,
-      endTime: endDateTime,
+      employee: employeeId,
+      employeeName,
+      startTime: startUTC,
+      endTime: endUTC,
       title: title || `Meeting with ${employeeName}`,
       status: "scheduled",
     });
@@ -297,16 +293,17 @@ export const rescheduleMeeting = async (req, res) => {
       });
     }
 
-    const startTimeSplit = newStartTime.split(":");
-    const endTimeSplit = newEndTime.split(":");
+    // Parse start and end in IST
+    const startIST = moment.tz(`${date} ${newStartTime}`, "YYYY-MM-DD HH:mm", "Asia/Kolkata");
+    const endIST = moment.tz(`${date} ${newEndTime}`, "YYYY-MM-DD HH:mm", "Asia/Kolkata");
 
-    const start = new Date(date);
-    start.setHours(Number(startTimeSplit[0]), Number(startTimeSplit[1]), 0, 0);
+    if (!startIST.isValid() || !endIST.isValid()) {
+      return res.status(400).json({
+        message: "Invalid time or date format",
+      });
+    }
 
-    const end = new Date(date);
-    end.setHours(Number(endTimeSplit[0]), Number(endTimeSplit[1]), 0, 0);
-
-    const durationMinutes = (end - start) / (1000 * 60);
+    const durationMinutes = endIST.diff(startIST, "minutes");
 
     if (durationMinutes > 30) {
       return res.status(400).json({
@@ -314,28 +311,24 @@ export const rescheduleMeeting = async (req, res) => {
       });
     }
 
-    if (Number(newStartTime.split(":")[0]) == 18) {
+    const startHour = startIST.hour();
+    const endHour = endIST.hour();
+
+    if (startHour < 9 || startHour >= 18 || endHour > 18 || endHour <= 9) {
       return res.status(400).json({
-        message: "Time slots are available only between 9-18",
+        message: "Time slots are available only between 09:00 to 18:00 IST",
       });
     }
 
-    if (Number(newEndTime.split(":")[0]) < 9) {
-      return res.status(400).json({
-        message: "Time slots are available only between 9-18",
-      });
-    }
-
-    const newMeetingDate = parseDate(date);
-    const newStartDateTime = parseDateTime(date, newStartTime);
-    const newEndDateTime = parseDateTime(date, newEndTime);
-
-    // Basic validation
-    if (newStartDateTime >= newEndDateTime) {
+    if (!startIST.isBefore(endIST)) {
       return res.status(400).json({
         message: "Start time must be before end time",
       });
     }
+
+    // Convert IST to UTC for DB comparison
+    const startUTC = startIST.clone().utc().toDate();
+    const endUTC = endIST.clone().utc().toDate();
 
     const meeting = await Meeting.findById(id);
     if (!meeting) {
@@ -352,13 +345,11 @@ export const rescheduleMeeting = async (req, res) => {
 
     const conflict = await Meeting.findOne({
       _id: { $ne: id },
-      // employeeName: meeting.employeeName, // Check conflicts for same employee
-      date: newMeetingDate,
       status: "scheduled",
       $or: [
         {
-          startTime: { $lt: newEndDateTime },
-          endTime: { $gt: newStartDateTime },
+          startTime: { $lt: endUTC },
+          endTime: { $gt: startUTC },
         },
       ],
     });
@@ -375,9 +366,9 @@ export const rescheduleMeeting = async (req, res) => {
       });
     }
 
-    meeting.date = newMeetingDate;
-    meeting.startTime = newStartDateTime;
-    meeting.endTime = newEndDateTime;
+    // Update meeting
+    meeting.startTime = startUTC;
+    meeting.endTime = endUTC;
     meeting.updatedAt = new Date();
 
     await meeting.save();
@@ -397,7 +388,6 @@ export const rescheduleMeeting = async (req, res) => {
 export const cancelMeeting = async (req, res) => {
   try {
     const { id } = req.params;
-    console.log(id);
 
     const meeting = await Meeting.findById(id);
 
@@ -413,19 +403,20 @@ export const cancelMeeting = async (req, res) => {
       });
     }
 
-    const nowUTC = new Date(); // current UTC time
-    const nowIST = new Date(nowUTC.getTime() + 5.5 * 60 * 60 * 1000); // add 5.5 hours
+    // Current time in IST
+    const nowIST = moment.tz("Asia/Kolkata");
 
-    const meetingStart = new Date(meeting.startTime); // already saved in IST
+    // Meeting start time is stored in UTC in DB
+    const meetingStartIST = moment.tz(meeting.startTime, "Asia/Kolkata");
 
-    if (nowIST >= meetingStart) {
+    if (nowIST.isSameOrAfter(meetingStartIST)) {
       return res.status(400).json({
         message: "Cannot cancel a meeting that has already started or passed",
       });
     }
 
     meeting.status = "cancelled";
-    meeting.updatedAt = new Date();
+    meeting.updatedAt = new Date(); // or use moment.utc().toDate()
     await meeting.save();
 
     return res.status(200).json({

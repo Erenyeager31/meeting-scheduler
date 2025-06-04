@@ -7,7 +7,7 @@ const meetingSchema = new mongoose.Schema({
     required: true
   },
   employeeName: { type: String, required: true },
-  date: { type: Date, required: true },        // normalized meeting date (midnight)
+  // date: { type: Date, required: true },        // normalized meeting date (midnight)
   startTime: { type: Date, required: true },   // exact start datetime
   endTime: { type: Date, required: true },     // exact end datetime
   status: { type: String, enum: ['scheduled', 'cancelled'], default: 'scheduled' },
@@ -17,6 +17,6 @@ const meetingSchema = new mongoose.Schema({
 });
 
 // Index for fast conflict detection
-meetingSchema.index({ date: 1, startTime: 1, endTime: 1 });
+meetingSchema.index({ startTime: 1, endTime: 1 });
 
 module.exports = mongoose.model('Meeting', meetingSchema);
