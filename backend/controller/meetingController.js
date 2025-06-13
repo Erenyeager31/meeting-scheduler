@@ -71,33 +71,18 @@ export const getAvailableSlots = async (req, res) => {
   try {
     const { date } = req.query;
     if (!date) {
-      return res
-        .status(400)
-        .json({ message: "Please provide a valid date in YYYY-MM-DD format" });
+      return res.status(400).json({
+        message: "Please provide a valid date in YYYY-MM-DD format",
+      });
     }
 
-    // Current time in IST
     const nowIST = moment.tz("Asia/Kolkata");
+    const dateStartIST = moment.tz(`${date} 09:00`, "YYYY-MM-DD HH:mm", "Asia/Kolkata");
+    const dateEndIST = moment.tz(`${date} 18:00`, "YYYY-MM-DD HH:mm", "Asia/Kolkata");
 
-    const businessStartIST = moment.tz(
-      `${date} 09:00`,
-      "YYYY-MM-DD HH:mm",
-      "Asia/Kolkata"
-    );
-    const businessEndIST = moment.tz(
-      `${date} 18:00`,
-      "YYYY-MM-DD HH:mm",
-      "Asia/Kolkata"
-    );
-
-    const businessStartUTC = businessStartIST.clone().utc().toDate();
-    const businessEndUTC = businessEndIST.clone().utc().toDate();
-
-    console.log(businessStartUTC,businessEndUTC);
-
-    // Check if requested date is in the past relative to IST today
+    // Prevent fetching past dates
     const todayIST = nowIST.clone().startOf("day");
-    if (businessStartIST.isBefore(todayIST)) {
+    if (dateStartIST.isBefore(todayIST)) {
       return res.status(400).json({
         message: "Cannot retrieve slots for past dates",
         date,
@@ -106,84 +91,65 @@ export const getAvailableSlots = async (req, res) => {
       });
     }
 
-    // Define raw slots in IST (30-minute slots)
-    const rawSlots = [
-      ["09:00", "09:30"],
-      ["09:30", "10:00"],
-      ["10:00", "10:30"],
-      ["10:30", "11:00"],
-      ["11:00", "11:30"],
-      ["11:30", "12:00"],
-      ["12:00", "12:30"],
-      ["12:30", "13:00"],
-      ["13:00", "13:30"],
-      ["13:30", "14:00"],
-      ["14:00", "14:30"],
-      ["14:30", "15:00"],
-      ["15:00", "15:30"],
-      ["15:30", "16:00"],
-      ["16:00", "16:30"],
-      ["16:30", "17:00"],
-      ["17:00", "17:30"],
-      ["17:30", "18:00"],
-    ];
+    const startUTC = dateStartIST.clone().utc().toDate();
+    const endUTC = dateEndIST.clone().utc().toDate();
 
-    // Map slots to moment objects in IST
-    const allSlots = rawSlots.map(([startStr, endStr]) => {
-      const startIST = moment.tz(
-        `${date} ${startStr}`,
-        "YYYY-MM-DD HH:mm",
-        "Asia/Kolkata"
-      );
-      const endIST = moment.tz(
-        `${date} ${endStr}`,
-        "YYYY-MM-DD HH:mm",
-        "Asia/Kolkata"
-      );
-      return { startIST, endIST, startStr, endStr };
-    });
-
-    // Fetch meetings overlapping the day in UTC
     const meetings = await Meeting.find({
       status: "scheduled",
-      startTime: { $lt: businessEndUTC },
-      endTime: { $gt: businessStartUTC },
-    });
+      startTime: { $lt: endUTC },
+      endTime: { $gt: startUTC },
+    }).sort({ startTime: 1 });
 
-    // Filter available slots
     const availableSlots = [];
+    let slotStart = dateStartIST.clone();
 
-    for (const { startIST, endIST, startStr, endStr } of allSlots) {
-      // Skip past slots
-      if (endIST.isSameOrBefore(nowIST) || startIST.isBefore(nowIST)) continue;
+    for (const meeting of meetings) {
+      const meetingStart = moment.utc(meeting.startTime).tz("Asia/Kolkata");
+      const meetingEnd = moment.utc(meeting.endTime).tz("Asia/Kolkata");
 
-      const startUTC = startIST.clone().utc().toDate();
-      const endUTC = endIST.clone().utc().toDate();
+      // If the gap between slotStart and meetingStart is > 0
+      if (meetingStart.isAfter(slotStart)) {
+        const gapEnd = meetingStart.clone();
 
-      // Check for conflicts via DB
-      const conflict = await Meeting.exists({
-        status: "scheduled",
-        startTime: { $lt: endUTC },
-        endTime: { $gt: startUTC },
-      });
+        // Avoid adding past slots
+        if (gapEnd.isAfter(nowIST)) {
+          const availableStart = moment.max(slotStart, nowIST);
+          if (gapEnd.isAfter(availableStart)) {
+            availableSlots.push([
+              availableStart.format("HH:mm"),
+              gapEnd.format("HH:mm"),
+            ]);
+          }
+        }
+      }
 
-      if (!conflict) {
-        availableSlots.push([startStr, endStr]);
+      // Move slotStart forward to the max of current slotStart and meetingEnd
+      if (meetingEnd.isAfter(slotStart)) {
+        slotStart = meetingEnd.clone();
       }
     }
 
-    const formattedSlots = availableSlots;
+    // Check if time remains between last slot and businessEnd
+    if (slotStart.isBefore(dateEndIST) && dateEndIST.isAfter(nowIST)) {
+      const availableStart = moment.max(slotStart, nowIST);
+      if (dateEndIST.isAfter(availableStart)) {
+        availableSlots.push([
+          availableStart.format("HH:mm"),
+          dateEndIST.format("HH:mm"),
+        ]);
+      }
+    }
 
-    res.status(200).json({
+    return res.status(200).json({
       date,
-      availableSlots: formattedSlots,
-      totalSlots: formattedSlots.length,
+      availableSlots,
+      totalSlots: availableSlots.length,
     });
   } catch (error) {
     console.error("Error fetching available slots:", error);
-    res
-      .status(500)
-      .json({ message: "Server error while fetching available slots" });
+    res.status(500).json({
+      message: "Server error while fetching available slots",
+    });
   }
 };
 
@@ -211,20 +177,17 @@ export const bookMeeting = async (req, res) => {
       "Asia/Kolkata"
     );
 
-    // Duration in minutes
-    const durationMinutes = endIST.diff(startIST, "minutes");
-
-    if (durationMinutes > 30) {
-      return res.status(400).json({
-        message: "Maximum meeting time is only 30 minutes",
-      });
-    }
-
     // Check if start time is between 9:00 and 18:00 IST
-    const startHour = startIST.hour();
-    if (startHour < 9 || startHour >= 18) {
+    const businessStart = moment.tz(`${date} 09:00`, "YYYY-MM-DD HH:mm", "Asia/Kolkata");
+    const businessEnd = moment.tz(`${date} 18:00`, "YYYY-MM-DD HH:mm", "Asia/Kolkata");
+
+    if (
+      startIST.isBefore(businessStart) ||
+      endIST.isAfter(businessEnd) ||
+      !startIST.isBefore(endIST)
+    ) {
       return res.status(400).json({
-        message: "Time slots are available only between 9-18 IST",
+        message: "Meetings must be fully within 09:00 to 18:00 IST and end after start time.",
       });
     }
 
@@ -234,7 +197,7 @@ export const bookMeeting = async (req, res) => {
       });
     }
 
-        // Check if start time is in the past (relative to now in IST)
+    // Check if start time is in the past (relative to now in IST)
     const nowIST = moment.tz("Asia/Kolkata");
     if (startIST.isBefore(nowIST)) {
       return res.status(400).json({
@@ -303,20 +266,17 @@ export const rescheduleMeeting = async (req, res) => {
       });
     }
 
-    const durationMinutes = endIST.diff(startIST, "minutes");
+    // Check if start time is between 9:00 and 18:00 IST
+    const businessStart = moment.tz(`${date} 09:00`, "YYYY-MM-DD HH:mm", "Asia/Kolkata");
+    const businessEnd = moment.tz(`${date} 18:00`, "YYYY-MM-DD HH:mm", "Asia/Kolkata");
 
-    if (durationMinutes > 30) {
+    if (
+      startIST.isBefore(businessStart) ||
+      endIST.isAfter(businessEnd) ||
+      !startIST.isBefore(endIST)
+    ) {
       return res.status(400).json({
-        message: "Maximum meeting time is only 30 minutes",
-      });
-    }
-
-    const startHour = startIST.hour();
-    const endHour = endIST.hour();
-
-    if (startHour < 9 || startHour >= 18 || endHour > 18 || endHour <= 9) {
-      return res.status(400).json({
-        message: "Time slots are available only between 09:00 to 18:00 IST",
+        message: "Meetings must be fully within 09:00 to 18:00 IST and end after start time.",
       });
     }
 

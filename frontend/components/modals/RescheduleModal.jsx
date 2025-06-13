@@ -22,16 +22,16 @@ export default function RescheduleModal({
 
     if (hours < 9 || hours > 18) return false;
     if (hours === 18 && minutes !== 0) return false;
-    if (minutes !== 0 && minutes !== 30) return false;
+    // if (minutes !== 0 && minutes !== 30) return false;
 
     return true;
   }
 
   const handleConfirm = () => {
-    if (!isValidSlotTime(newSlot[0]) || !isValidSlotTime(newSlot[1])) {
-      alert("Please select time between 09:00 and 18:00, with minutes 00 or 30 only.");
-      return;
-    }
+    // if (!isValidSlotTime(newSlot[0]) || !isValidSlotTime(newSlot[1])) {
+    //   alert("Please select time between 09:00 and 18:00, with minutes 00 or 30 only.");
+    //   return;
+    // }
     if (newSlot[1] <= newSlot[0]) {
       alert("End time must be after start time.");
       return;
@@ -48,6 +48,7 @@ export default function RescheduleModal({
     try {
       const res = await fetch(`http://localhost:3000/meeting/cancel/${selectedBooking.id}`, {
         method: "delete",
+        credentials:'include'
       });
       const data = await res.json();
 

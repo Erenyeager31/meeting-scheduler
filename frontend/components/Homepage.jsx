@@ -12,6 +12,9 @@ export default function Homepage() {
   const [loading, setLoading] = useState(false);
   const [debugInfo, setDebugInfo] = useState("");
 
+  const [startTime, setStartTime] = useState("");
+  const [endTime, setEndTime] = useState("");
+
   // modal control
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [showModal, setShowModal] = useState(false);
@@ -33,48 +36,51 @@ export default function Homepage() {
   };
 
   const handleBooking = async () => {
-    if (!employeeName || !meetingTitle) {
-      setDebugInfo("Please fill out all fields");
-      return;
-    }
+  if (!employeeName || !meetingTitle || !startTime || !endTime) {
+    setDebugInfo("Please fill out all fields including time");
+    return;
+  }
 
-    const payload = {
-      employeeId: user.id,
-      employeeName: user.name,
-      date,
-      startTime: selectedSlot[0],
-      endTime: selectedSlot[1],
-      title: meetingTitle,
-    };
-
-    setBookingLoading(true);
-    setDebugInfo("Booking slot...");
-
-    try {
-      const response = await fetch("http://localhost:3000/meeting/book", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        credentials:'include'
-      });
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.message || "Booking failed.");
-      }
-
-      setDebugInfo(`Booked successfully: ${result.message || "OK"}`);
-      setShowModal(false);
-      setEmployeeName("");
-      setMeetingTitle("");
-    } catch (error) {
-      console.error("Booking Error:", error);
-      setDebugInfo(`Booking failed: ${error.message}`);
-    } finally {
-      setBookingLoading(false);
-    }
+  const payload = {
+    employeeId: user.id,
+    employeeName: user.name,
+    date: date, // from parent scope
+    startTime,
+    endTime,
+    title: meetingTitle,
   };
+
+  setBookingLoading(true);
+  setDebugInfo("Booking slot...");
+
+  try {
+    const response = await fetch("http://localhost:3000/meeting/book", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      credentials: "include",
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.message || "Booking failed.");
+    }
+
+    setDebugInfo(`Booked successfully: ${result.message || "OK"}`);
+    setShowModal(false);
+    setEmployeeName("");
+    setMeetingTitle("");
+    setStartTime("");
+    setEndTime("");
+  } catch (error) {
+    console.error("Booking Error:", error);
+    setDebugInfo(`Booking failed: ${error.message}`);
+  } finally {
+    setBookingLoading(false);
+  }
+};
+
 
   const fetchBookedSlots = async () => {
     if (!date) {
@@ -111,7 +117,7 @@ export default function Homepage() {
         `http://localhost:3000/meeting/reschedule/${selectedBooking.id}`,
         {
           method: "PATCH",
-          credentials:'include',
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             date: newDate,
@@ -165,19 +171,6 @@ export default function Homepage() {
     }
   };
 
-  // Mock data for testing when API is not available
-  const loadMockData = () => {
-    const mockSlots = [
-      ["09:00", "10:00"],
-      ["10:30", "11:30"],
-      ["14:00", "15:00"],
-      ["15:30", "16:30"],
-      ["17:00", "18:00"],
-    ];
-    setSlots(mockSlots);
-    setDebugInfo(`Mock data loaded: ${mockSlots.length} slots`);
-  };
-
   // handle logout
   const logout = async () => {
     localStorage.clear();
@@ -228,12 +221,6 @@ export default function Homepage() {
         >
           {loading ? "Loading..." : "Load Slots"}
         </button>
-        {/* <button
-          onClick={loadMockData}
-          className="bg-gradient-to-r from-green-600 to-emerald-600 text-white px-6 py-2 rounded-md hover:from-green-700 hover:to-emerald-700 transition duration-200 font-semibold shadow-md"
-        >
-          Load Mock Data
-        </button> */}
         <button
           onClick={fetchBookedSlots}
           className="bg-gradient-to-r from-rose-600 to-pink-600 text-white px-6 py-2 rounded-md hover:from-rose-700 hover:to-pink-700 transition duration-200 font-semibold shadow-md"
@@ -298,12 +285,12 @@ export default function Homepage() {
                 key={slot.meetingId}
                 className="aspect-square bg-red-100 border border-red-300 text-red-800 font-medium flex items-center justify-center rounded shadow-sm text-sm hover:bg-red-200 transition cursor-pointer"
                 onClick={() => {
-                  if(slot.employeeId !== user.id){
-                    alert('You can only reschedule your own meeting !')
+                  if (slot.employeeId !== user.id) {
+                    alert("You can only reschedule your own meeting !");
                     return;
                   }
                   setSelectedBooking({
-                    employeeID:slot.employeeId,
+                    employeeID: slot.employeeId,
                     id: slot.meetingId,
                     start: slot.startTime,
                     end: slot.endTime,
@@ -322,10 +309,13 @@ export default function Homepage() {
 
       <BookingModal
         show={showModal}
-        slot={selectedSlot}
         date={date}
         employeeName={employeeName}
         meetingTitle={meetingTitle}
+        startTime={startTime}
+        endTime={endTime}
+        setStartTime={setStartTime}
+        setEndTime={setEndTime}
         setEmployeeName={setEmployeeName}
         setMeetingTitle={setMeetingTitle}
         onClose={() => setShowModal(false)}
